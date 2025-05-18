@@ -2,6 +2,7 @@ package com.example.exceltojson.controller;
 
 import com.example.exceltojson.service.FileProcessingService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -15,6 +16,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api")
 @RequiredArgsConstructor
+@Slf4j
 public class FileController {
 
     private final FileProcessingService fileProcessingService;
@@ -27,16 +29,24 @@ public class FileController {
         Map<String, Object> response = new HashMap<>();
         
         try {
+            log.info("Received files - Excel: {}, JSON: {}", 
+                    excelFile.getOriginalFilename(), 
+                    jsonFile.getOriginalFilename());
+
             // Validate file types
             if (!excelFile.getContentType().equals("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) {
+                String errorMsg = "Invalid Excel file format. Please upload an .xlsx file. Received: " + excelFile.getContentType();
+                log.error(errorMsg);
                 response.put("success", false);
-                response.put("message", "Invalid Excel file format. Please upload an .xlsx file.");
+                response.put("message", errorMsg);
                 return ResponseEntity.badRequest().body(response);
             }
 
             if (!jsonFile.getContentType().equals("application/json")) {
+                String errorMsg = "Invalid JSON file format. Please upload a .json file. Received: " + jsonFile.getContentType();
+                log.error(errorMsg);
                 response.put("success", false);
-                response.put("message", "Invalid JSON file format. Please upload a .json file.");
+                response.put("message", errorMsg);
                 return ResponseEntity.badRequest().body(response);
             }
 
@@ -48,6 +58,7 @@ public class FileController {
             return ResponseEntity.ok(response);
             
         } catch (Exception e) {
+            log.error("Error processing files", e);
             response.put("success", false);
             response.put("message", "Error processing files: " + e.getMessage());
             return ResponseEntity.badRequest().body(response);
@@ -67,6 +78,7 @@ public class FileController {
                     .body(resource);
                     
         } catch (Exception e) {
+            log.error("Error downloading file", e);
             return ResponseEntity.badRequest().build();
         }
     }
