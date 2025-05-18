@@ -1,159 +1,127 @@
 package com.example.exceltojson.service;
 
-import com.example.exceltojson.model.JsonFile;
 import com.example.exceltojson.model.Store;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.*;
-import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
 public class FileProcessingService {
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private String lastProcessedJson;
 
-    private final ObjectMapper objectMapper;
-    private JsonFile currentJsonFile;
-
-    public void processFiles(MultipartFile excelFile, MultipartFile jsonFile) throws IOException {
-        // Read and parse JSON file
-        JsonFile jsonData = objectMapper.readValue(jsonFile.getInputStream(), JsonFile.class);
-        
-        if (jsonData.getStores() == null || jsonData.getStores().isEmpty()) {
-            throw new IllegalArgumentException("JSON file must contain at least one store entry");
+    public String processFiles(MultipartFile excelFile, MultipartFile jsonFile) throws IOException {
+        // Read JSON file and find the first array key
+        JsonNode rootNode = objectMapper.readTree(jsonFile.getInputStream());
+        String arrayKey = findFirstArrayKey(rootNode);
+        if (arrayKey == null) {
+            throw new IllegalArgumentException("JSON file must contain at least one array of objects");
         }
 
-        // Get expected column names from the first store in JSON
-        Store firstStore = jsonData.getStores().get(0);
-        Set<String> expectedColumns = new HashSet<>();
-        if (firstStore.getTemplate() != null) expectedColumns.add("template");
-        if (firstStore.getAddress() != null) expectedColumns.add("address");
-        if (firstStore.getName() != null) expectedColumns.add("name");
-        if (firstStore.getLogo() != null) expectedColumns.add("logo");
-        if (firstStore.getEmail() != null) expectedColumns.add("email");
-        
+        // Get the array node and its first object to determine expected fields
+        JsonNode arrayNode = rootNode.get(arrayKey);
+        if (!arrayNode.isArray() || arrayNode.size() == 0) {
+            throw new IllegalArgumentException("JSON array must contain at least one object");
+        }
+
+        // Get expected fields from the first object in the array
+        JsonNode firstObject = arrayNode.get(0);
+        Set<String> expectedFields = new HashSet<>();
+        firstObject.fields().forEachRemaining(entry -> expectedFields.add(entry.getKey()));
+
         // Read Excel file
-        List<Store> stores = new ArrayList<>();
-        try (Workbook workbook = new XSSFWorkbook(excelFile.getInputStream())) {
+        try (Workbook workbook = WorkbookFactory.create(excelFile.getInputStream())) {
             Sheet sheet = workbook.getSheetAt(0);
             Row headerRow = sheet.getRow(0);
-            
             if (headerRow == null) {
-                throw new IllegalArgumentException("Excel file must have a header row");
+                throw new IllegalArgumentException("Excel file must contain a header row");
             }
 
-            // Create column mapping and validate column names
+            // Create mapping of column indices to names
             Map<Integer, String> columnMapping = new HashMap<>();
-            Set<String> excelColumns = new HashSet<>();
             for (int i = 0; i < headerRow.getLastCellNum(); i++) {
                 Cell cell = headerRow.getCell(i);
                 if (cell != null) {
-                    String columnName = cell.getStringCellValue().trim().toLowerCase();
+                    String columnName = cell.getStringCellValue().trim();
                     if (!columnName.isEmpty()) {
                         columnMapping.put(i, columnName);
-                        excelColumns.add(columnName);
                     }
                 }
             }
 
-            if (columnMapping.isEmpty()) {
-                throw new IllegalArgumentException("No valid columns found in Excel file");
+            // Log missing fields instead of throwing an error
+            Set<String> missingFields = new HashSet<>(expectedFields);
+            missingFields.removeAll(columnMapping.values());
+            if (!missingFields.isEmpty()) {
+                System.out.println("Note: The following columns from JSON are not present in Excel: " + String.join(", ", missingFields));
             }
 
-            // Validate column names
-            validateColumnNames(excelColumns, expectedColumns);
-
             // Process each row
+            List<Map<String, String>> items = new ArrayList<>();
             for (int i = 1; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
                 if (row == null) continue;
 
-                Store store = new Store();
+                Map<String, String> itemData = new HashMap<>();
+                boolean hasData = false;
                 
-                // Map each column to its corresponding field
                 for (Map.Entry<Integer, String> entry : columnMapping.entrySet()) {
                     int columnIndex = entry.getKey();
                     String columnName = entry.getValue();
-                    String value = getCellValueAsString(row.getCell(columnIndex));
+                    Cell cell = row.getCell(columnIndex);
                     
-                    switch (columnName) {
-                        case "template":
-                            store.setTemplate(value);
-                            break;
-                        case "address":
-                            store.setAddress(value);
-                            break;
-                        case "name":
-                            store.setName(value);
-                            break;
-                        case "logo":
-                            store.setLogo(value);
-                            break;
-                        case "email":
-                            store.setEmail(value);
-                            break;
+                    if (cell != null) {
+                        String value = getCellValueAsString(cell);
+                        if (value != null && !value.isEmpty()) {
+                            itemData.put(columnName, value);
+                            hasData = true;
+                        }
                     }
                 }
+                
+                if (hasData) {
+                    items.add(itemData);
+                }
+            }
 
-                stores.add(store);
+            // Create new JSON structure
+            Map<String, Object> newJsonData = new HashMap<>();
+            newJsonData.put(arrayKey, items);
+            
+            // Store and return the updated JSON
+            lastProcessedJson = objectMapper.writeValueAsString(newJsonData);
+            return lastProcessedJson;
+        }
+    }
+
+    private String findFirstArrayKey(JsonNode rootNode) {
+        Iterator<Map.Entry<String, JsonNode>> fields = rootNode.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> entry = fields.next();
+            if (entry.getValue().isArray() && entry.getValue().size() > 0 && entry.getValue().get(0).isObject()) {
+                return entry.getKey();
             }
         }
-
-        // Update JSON data
-        jsonData.setStores(stores);
-        currentJsonFile = jsonData;
+        return null;
     }
 
-    private void validateColumnNames(Set<String> excelColumns, Set<String> expectedColumns) {
-        // Convert both sets to lowercase for case-insensitive comparison
-        Set<String> excelColumnsLower = excelColumns.stream()
-            .map(String::toLowerCase)
-            .collect(Collectors.toSet());
-        Set<String> expectedColumnsLower = expectedColumns.stream()
-            .map(String::toLowerCase)
-            .collect(Collectors.toSet());
-
-        // Only check for missing columns
-        Set<String> missingColumns = expectedColumnsLower.stream()
-            .filter(col -> !excelColumnsLower.contains(col))
-            .collect(Collectors.toSet());
-
-        if (!missingColumns.isEmpty()) {
-            StringBuilder errorMessage = new StringBuilder("Column name mismatch detected:\n");
-            
-            // Convert back to original case for error message
-            Set<String> missingOriginalCase = expectedColumns.stream()
-                .filter(col -> missingColumns.contains(col.toLowerCase()))
-                .collect(Collectors.toSet());
-            errorMessage.append("Missing columns in Excel file: ")
-                      .append(String.join(", ", missingOriginalCase))
-                      .append("\n");
-            
-            errorMessage.append("\nPlease ensure all required columns are present in the Excel file.");
-            throw new IllegalArgumentException(errorMessage.toString());
+    public byte[] getLatestJsonData() throws IOException {
+        if (lastProcessedJson == null) {
+            // If no data has been processed yet, return an empty JSON structure
+            Map<String, List<Map<String, String>>> emptyData = new HashMap<>();
+            emptyData.put("data", new ArrayList<>());
+            return objectMapper.writeValueAsString(emptyData).getBytes();
         }
-    }
-
-    public byte[] getUpdatedJsonFile() throws IOException {
-        if (currentJsonFile == null) {
-            throw new IllegalStateException("No processed JSON file available");
-        }
-
-        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-        objectMapper.writeValue(outputStream, currentJsonFile);
-        return outputStream.toByteArray();
+        return lastProcessedJson.getBytes();
     }
 
     private String getCellValueAsString(Cell cell) {
-        if (cell == null) {
-            return "";
-        }
+        if (cell == null) return null;
 
         switch (cell.getCellType()) {
             case STRING:
@@ -162,12 +130,8 @@ public class FileProcessingService {
                 if (DateUtil.isCellDateFormatted(cell)) {
                     return cell.getLocalDateTimeCellValue().toString();
                 }
-                // Remove trailing zeros for numeric values
-                double value = cell.getNumericCellValue();
-                if (value == Math.floor(value)) {
-                    return String.format("%.0f", value);
-                }
-                return String.valueOf(value);
+                // Format numeric values without scientific notation
+                return String.format("%.0f", cell.getNumericCellValue());
             case BOOLEAN:
                 return String.valueOf(cell.getBooleanCellValue());
             case FORMULA:
@@ -177,7 +141,7 @@ public class FileProcessingService {
                     return cell.getStringCellValue();
                 }
             default:
-                return "";
+                return null;
         }
     }
 } 

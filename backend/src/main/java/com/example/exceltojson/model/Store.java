@@ -1,12 +1,9 @@
 package com.example.exceltojson.model;
 
 import lombok.Data;
+import java.util.Map;
 
 @Data
 public class Store {
-    private String template;
-    private String address;
-    private String name;
-    private String logo;
-    private String email;
+    private Map<String, String> data;
 } 

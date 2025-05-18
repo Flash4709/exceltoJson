@@ -17,48 +17,27 @@ import java.util.Map;
 @RequestMapping("/api")
 @RequiredArgsConstructor
 @Slf4j
+@CrossOrigin(origins = "http://localhost:5173")
 public class FileController {
 
     private final FileProcessingService fileProcessingService;
 
     @PostMapping("/upload")
-    public ResponseEntity<Map<String, Object>> uploadFiles(
+    public ResponseEntity<?> uploadFiles(
             @RequestParam("excelFile") MultipartFile excelFile,
             @RequestParam("jsonFile") MultipartFile jsonFile) {
         
-        Map<String, Object> response = new HashMap<>();
+        log.info("Received files - Excel: {}, JSON: {}", excelFile.getOriginalFilename(), jsonFile.getOriginalFilename());
         
         try {
-            log.info("Received files - Excel: {}, JSON: {}", 
-                    excelFile.getOriginalFilename(), 
-                    jsonFile.getOriginalFilename());
-
-            // Validate file types
-            if (!excelFile.getContentType().equals("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) {
-                String errorMsg = "Invalid Excel file format. Please upload an .xlsx file. Received: " + excelFile.getContentType();
-                log.error(errorMsg);
-                response.put("success", false);
-                response.put("message", errorMsg);
-                return ResponseEntity.badRequest().body(response);
-            }
-
-            if (!jsonFile.getContentType().equals("application/json")) {
-                String errorMsg = "Invalid JSON file format. Please upload a .json file. Received: " + jsonFile.getContentType();
-                log.error(errorMsg);
-                response.put("success", false);
-                response.put("message", errorMsg);
-                return ResponseEntity.badRequest().body(response);
-            }
-
-            // Process files
-            fileProcessingService.processFiles(excelFile, jsonFile);
-            
+            String updatedJson = fileProcessingService.processFiles(excelFile, jsonFile);
+            Map<String, Object> response = new HashMap<>();
             response.put("success", true);
-            response.put("message", "Files processed successfully");
+            response.put("data", updatedJson);
             return ResponseEntity.ok(response);
-            
         } catch (Exception e) {
             log.error("Error processing files", e);
+            Map<String, Object> response = new HashMap<>();
             response.put("success", false);
             response.put("message", "Error processing files: " + e.getMessage());
             return ResponseEntity.badRequest().body(response);
@@ -68,7 +47,7 @@ public class FileController {
     @GetMapping("/download")
     public ResponseEntity<ByteArrayResource> downloadFile() {
         try {
-            byte[] data = fileProcessingService.getUpdatedJsonFile();
+            byte[] data = fileProcessingService.getLatestJsonData();
             ByteArrayResource resource = new ByteArrayResource(data);
 
             return ResponseEntity.ok()
@@ -79,7 +58,7 @@ public class FileController {
                     
         } catch (Exception e) {
             log.error("Error downloading file", e);
-            return ResponseEntity.badRequest().build();
+            return ResponseEntity.internalServerError().build();
         }
     }
 } 
